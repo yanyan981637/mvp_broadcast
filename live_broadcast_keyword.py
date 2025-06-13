@@ -26,14 +26,18 @@ if not IG_USERNAME or not IG_PASSWORD:
     sys.exit("錯誤：請先在 .env 填寫 INSTAGRAM_USERNAME 及 INSTAGRAM_PASSWORD。")
 
 # 2. 挑戰驗證處理（2FA、Email、SMS）
-def challenge_code_handler(username: str, choice: ChallengeChoice) -> str:
-    if choice == ChallengeChoice.TWO_FACTOR:
+def challenge_code_handler(username: str, choice):
+    print("⚠️ IG 檢測到這次登入需要進行驗證，請依照下方提示輸入驗證碼。")
+    c = str(choice).lower()
+    if "two" in c or "totp" in c or "app" in c:
         return input("📱 請輸入 Google Authenticator 6 位數 2FA 驗證碼：").strip()
-    elif choice == ChallengeChoice.EMAIL:
+    elif "email" in c:
         return input("📧 請輸入寄到 Email 的 6 位數驗證碼：").strip()
-    elif choice == ChallengeChoice.SMS:
+    elif "sms" in c or "phone" in c:
         return input("📲 請輸入手機簡訊的 6 位數驗證碼：").strip()
-    return False
+    else:
+        print(f"收到未知的驗證方式 {choice}，請查看 instagrapi 文件或升級。")
+        return input("請手動輸入收到的驗證碼：").strip()
 
 # 3. 關鍵字正則
 PATTERN = re.compile(r"""
