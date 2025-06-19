@@ -2,4 +2,6 @@
 session.json
 order_information
 build
+dist
+images
 live_broadcast_keyword.spec
