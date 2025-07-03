@@ -5,322 +5,315 @@ import os
 import re
 import sys
 import time
-import json
 import csv
+import random
 import argparse
+import platform
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from instagrapi import Client
-from instagrapi.mixins.challenge import ChallengeChoice
-from instagrapi.exceptions import ClientError, LoginRequired
-from PIL import Image, ImageDraw, ImageFont
-import platform
+from instagrapi.exceptions import TwoFactorRequired, LoginRequired
+from PIL import Image, ImageDraw, ImageFont, ImageWin
 
+# =======================
+# 裝置資料池
+# =======================
+DEVICE_POOL = [
+    {
+        "app_version": "290.0.0.28.109",
+        "android_version": 30,
+        "android_release": "11",
+        "dpi": "420dpi",
+        "resolution": "1080x2136",
+        "manufacturer": "samsung",
+        "device": "y2q",
+        "model": "SM-G9810",
+        "cpu": "qcom",
+        "version_code": "465350279",
+        "user_agent": "Instagram 290.0.0.28.109 Android (30/11; 420dpi; 1080x2136; samsung; SM-G9810; y2q; qcom; zh_TW; 465350279)"
+    },
+    {
+        "app_version": "286.0.0.15.69",
+        "android_version": 30,
+        "android_release": "11",
+        "dpi": "480dpi",
+        "resolution": "1080x2400",
+        "manufacturer": "Xiaomi",
+        "device": "umi",
+        "model": "Mi 10",
+        "cpu": "qcom",
+        "version_code": "398737262",
+        "user_agent": "Instagram 286.0.0.15.69 Android (30/11; 480dpi; 1080x2400; Xiaomi; Mi 10; umi; qcom; zh_CN; 398737262)"
+    },
+    {
+        "app_version": "275.0.0.27.100",
+        "android_version": 29,
+        "android_release": "10",
+        "dpi": "440dpi",
+        "resolution": "1080x2340",
+        "manufacturer": "HUAWEI",
+        "device": "HWEL29",
+        "model": "ELE-L29",
+        "cpu": "kirin980",
+        "version_code": "285739473",
+        "user_agent": "Instagram 275.0.0.27.100 Android (29/10; 440dpi; 1080x2340; HUAWEI; ELE-L29; HWEL29; kirin980; zh_CN; 285739473)"
+    },
+    {
+        "app_version": "253.0.0.16.119",
+        "android_version": 30,
+        "android_release": "10",
+        "dpi": "420dpi",
+        "resolution": "1080x2220",
+        "manufacturer": "samsung",
+        "device": "starlte",
+        "model": "SM-G960F",
+        "cpu": "exynos9810",
+        "version_code": "215757342",
+        "user_agent": "Instagram 253.0.0.16.119 Android (30/10; 420dpi; 1080x2220; samsung; SM-G960F; starlte; exynos9810; zh_TW; 215757342)"
+    }
+]
+
+# =======================
+# Windows printing modules
+# =======================
 if platform.system().lower() == "windows":
     try:
         import win32print
-        import win32api
+        import win32ui
+        import win32con
     except ImportError:
         print("請先安裝 pywin32：pip install pywin32")
         sys.exit(1)
 
-# ========== 字體自動選擇 ==========
-def get_font(font_size):
-    # Windows
-    font_path = r"C:\Windows\Fonts\msjh.ttc"
-    if os.path.exists(font_path):
-        return ImageFont.truetype(font_path, font_size)
-    # macOS
-    font_path_mac = "/System/Library/Fonts/STHeiti Light.ttc"
-    if os.path.exists(font_path_mac):
-        return ImageFont.truetype(font_path_mac, font_size)
-    # Linux: Noto Sans CJK
-    font_path_noto = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-    if os.path.exists(font_path_noto):
-        return ImageFont.truetype(font_path_noto, font_size)
-    print("⚠️ 沒找到中文字體，將用預設，中文可能無法顯示。")
+def get_font(size):
+    paths = [
+        r"C:\Windows\Fonts\msjh.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    ]
+    for p in paths:
+        if Path(p).exists():
+            return ImageFont.truetype(p, size)
     return ImageFont.load_default()
 
-# ========== 圖片產生 ==========
 def generate_print_image(username, text, img_path):
     dpi = 300
-    width_cm, height_cm = 5, 3
-    width_px = int(width_cm * dpi / 2.54)
-    height_px = int(height_cm * dpi / 2.54)
-    img = Image.new('RGB', (width_px, height_px), (255, 255, 255))
+    w_cm, h_cm = 5, 3
+    w_px, h_px = int(w_cm * dpi / 2.54), int(h_cm * dpi / 2.54)
+    img = Image.new('RGB', (w_px, h_px), 'white')
     draw = ImageDraw.Draw(img)
 
-    big_font = get_font(70)
-    med_font = get_font(55)
+    def text_size(txt, font):
+        bbox = draw.textbbox((0, 0), txt, font=font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    def get_text_size(draw, text, font):
-        try:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-        except Exception:
-            w, h = draw.textsize(text, font=font)
-        return w, h
+    def fit_font(txt, max_w, max_s):
+        s = max_s
+        font = get_font(s)
+        w, _ = text_size(txt, font)
+        while w > max_w and s > 10:
+            s -= 1
+            font = get_font(s)
+            w, _ = text_size(txt, font)
+        return font
 
-    w1, h1 = get_text_size(draw, username, big_font)
-    w2, h2 = get_text_size(draw, text, med_font)
-    x1 = (width_px - w1) // 2
-    x2 = (width_px - w2) // 2
-    y1 = int(height_px * 0.18)
-    y2 = int(height_px * 0.56)
+    f1 = fit_font(username, w_px * 0.9, 70)
+    f2 = fit_font(text, w_px * 0.9, 55)
+    w1, _ = text_size(username, f1)
+    w2, _ = text_size(text, f2)
+    x1, x2 = (w_px - w1) // 2, (w_px - w2) // 2
+    y1, y2 = int(h_px * 0.18), int(h_px * 0.56)
 
-    draw.text((x1, y1), username, fill=(0, 0, 0), font=big_font)
-    draw.text((x2, y2), text, fill=(0, 0, 0), font=med_font)
-
+    draw.text((x1, y1), username, 'black', font=f1)
+    draw.text((x2, y2), text, 'black', font=f2)
     img.save(img_path, dpi=(dpi, dpi))
-    print(f"已存檔: {img_path}")
-    # img.show() # 若需即時預覽內容可開啟這行
     return img_path
 
-# ========== 列印 ==========
 def print_image_auto(img_path):
-    system = platform.system().lower()
-    try:
-        if system == 'windows':
-            printer_name = win32print.GetDefaultPrinter()
-            win32api.ShellExecute(
-                0,
-                "print",
-                img_path,
-                None,
-                ".",
-                0
-            )
-            print(f"已自動發送列印（Windows）：{img_path}")
-        elif system in ['linux', 'darwin']:
-            os.system(f'lp "{img_path}"')
-            print(f"已自動發送列印（lp）：{img_path}")
-        else:
-            print("⚠️ 不支援的作業系統，請手動列印。")
-    except Exception as e:
-        print(f"發送列印失敗：{e}")
+    landscape = platform.system().lower() == 'windows'
+    img = Image.open(img_path).rotate(90, expand=True)
+    if not landscape:
+        tmp = img_path.replace('.png', '_rotated.png')
+        img.save(tmp)
+        os.system(f'lp "{tmp}"')
+        print(f"已發送至非Windows印表機：{tmp}")
+        return
+    printer = win32print.GetDefaultPrinter()
+    dc = win32ui.CreateDC()
+    dc.CreatePrinterDC(printer)
+    dc.StartDoc(Path(img_path).name)
+    dc.StartPage()
+    dib = ImageWin.Dib(img)
+    w_res = dc.GetDeviceCaps(win32con.HORZRES)
+    h_res = dc.GetDeviceCaps(win32con.VERTRES)
+    dib.draw(dc.GetHandleOutput(), (0, 0, w_res, h_res))
+    dc.EndPage()
+    dc.EndDoc()
+    print(f"已發送列印：{img_path}")
 
-# ========== IG 關鍵字擷取主程式 ==========
-
-# 1. 讀取 .env
 load_dotenv()
-IG_USERNAME = os.getenv("INSTAGRAM_USERNAME", "").strip()
-IG_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "").strip()
-BROADCAST_ID = os.getenv("BROADCAST_ID", "").strip()
-SESSION_FILE = "session.json"
+USER = os.getenv('INSTAGRAM_USERNAME', '').strip()
+PASS = os.getenv('INSTAGRAM_PASSWORD', '').strip()
+BID = os.getenv('BROADCAST_ID', '').strip()
+SESSION_FILE = 'session.json'
+if not USER or not PASS:
+    sys.exit('請設定 .env INSTAGRAM_USERNAME 和 INSTAGRAM_PASSWORD')
 
-if not IG_USERNAME or not IG_PASSWORD:
-    sys.exit("錯誤：請先在 .env 填寫 INSTAGRAM_USERNAME 及 INSTAGRAM_PASSWORD。")
+PAT = re.compile(r'([A-L])(1[0-2]|[1-9])\s*\+([1-9]\d{0,4})')
+skip = {'patrician_jewelry', 'anita.lee0918'}
 
-# 2. 挑戰驗證處理（2FA、Email、SMS）
-def challenge_code_handler(username: str, choice):
-    print("⚠️ IG 檢測到這次登入需要進行驗證，請依照下方提示輸入驗證碼。")
-    c = str(choice).lower()
-    if "two" in c or "totp" in c or "app" in c:
-        return input("📱 請輸入 Google Authenticator 6 位數 2FA 驗證碼：").strip()
-    elif "email" in c:
-        return input("📧 請輸入寄到 Email 的 6 位數驗證碼：").strip()
-    elif "sms" in c or "phone" in c:
-        return input("📲 請輸入手機簡訊的 6 位數驗證碼：").strip()
-    else:
-        print(f"收到未知的驗證方式 {choice}，請查看 instagrapi 文件或升級。")
-        return input("請手動輸入收到的驗證碼：").strip()
+def match_keyword(txt):
+    return [(int(m.group(3)), m.group(1), int(m.group(2))) for m in PAT.finditer(txt)] or None
 
-# 3. 關鍵字正則 (A-L)(1-12) + 1~99999
-PATTERN = re.compile(r'([A-L])(1[0-2]|[1-9])\s*\+([1-9]\d{0,4})')
+def challenge_code_handler(username, choice):
+    prompt = '驗證碼: '
+    if 'app' in str(choice).lower(): prompt = 'OTP: '
+    if 'email' in str(choice).lower(): prompt = 'Email code: '
+    if 'sms' in str(choice).lower(): prompt = 'SMS code: '
+    return input(prompt)
 
-def match_keyword(text: str):
-    matches = []
-    for m in PATTERN.finditer(text):
-        group_letter = m.group(1)
-        group_number = int(m.group(2))
-        number = int(m.group(3))
-        matches.append((number, group_letter, group_number))
-    return matches if matches else None
-
-# 4. 判斷 session.json 是否為目前帳號
-def is_session_for_username(session_file, ig_username):
-    if not os.path.exists(session_file):
-        return False
-    with open(session_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    ds_user_id = data.get("authorization_data", {}).get("ds_user_id")
-    if not ds_user_id:
-        return False
-    try:
-        temp_cl = Client()
-        user_id = temp_cl.user_id_from_username(ig_username)
-    except Exception as e:
-        print(f"查詢 username 對應 user_id 失敗：{e}")
-        return False
-    return str(ds_user_id) == str(user_id)
-
-# 5. 登入並管理 session
 def get_client():
+    device = random.choice(DEVICE_POOL)
     cl = Client()
+    cl.set_user_agent(device["user_agent"])
+    cl.device_settings = {
+        "app_version": device["app_version"],
+        "android_version": device["android_version"],
+        "android_release": device["android_release"],
+        "dpi": device["dpi"],
+        "resolution": device["resolution"],
+        "manufacturer": device["manufacturer"],
+        "device": device["device"],
+        "model": device["model"],
+        "cpu": device["cpu"],
+        "version_code": device["version_code"]
+    }
+
     cl.challenge_code_handler = challenge_code_handler
-    if is_session_for_username(SESSION_FILE, IG_USERNAME):
-        try:
-            cl.load_settings(SESSION_FILE)
-            cl.user_id_from_username(IG_USERNAME)
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 已載入 {SESSION_FILE}，session 有效且帳號正確。")
-            return cl
-        except Exception:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Session 檔案無效或過期，將重新登入。")
-            os.remove(SESSION_FILE)
-    try:
-        cl.login(IG_USERNAME, IG_PASSWORD)
-        cl.dump_settings(SESSION_FILE)
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 使用帳密重新登入，並儲存 session。")
+    if Path(SESSION_FILE).exists():
+        cl.load_settings(SESSION_FILE)
+        print(f"已載入 session，使用 UA: {cl.user_agent}")
         return cl
-    except (LoginRequired, ClientError) as e:
-        sys.exit(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 登入失敗：{e}")
+    try:
+        cl.login(USER, PASS)
+        print(f"首次登入，使用 UA: {cl.user_agent}")
+    except TwoFactorRequired as e:
+        code = challenge_code_handler(USER, e)
+        cl.login(USER, PASS, verification_code=code)
+        print(f"二階段驗證登入，使用 UA: {cl.user_agent}")
+    cl.dump_settings(SESSION_FILE)
+    return cl
 
-# 6. 偵測到關鍵字時，寫入指定csv
-def save_order_info(file_path, number, group_letter, group_number, user_id, username, text):
-    ts = datetime.now()
-    header = ["timestamp", "number", "group_letter", "group_number", "user_id", "username", "text"]
-    row = [ts.strftime("%Y-%m-%d %H:%M:%S"), number, group_letter, group_number, user_id, username, text]
-    write_header = not file_path.exists()
-    with open(file_path, "a", encoding="utf-8-sig", newline='') as f:
-        writer = csv.writer(f)
-        if write_header:
-            writer.writerow(header)
-        writer.writerow(row)
+def save_csv(fp, row):
+    new = not fp.exists()
+    with open(fp, 'a', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(['timestamp', 'number', 'group_letter', 'group_number', 'user_id', 'username', 'text'])
+        w.writerow(row)
 
-# 7. 直播聊天室監聽
-def fetch_live_comments(client: Client, broadcast_id: str, limit: int, custom_filename: str):
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 監聽直播聊天室（broadcast_id={broadcast_id}）")
-    seen = set()
-    last_ts = 0
-    found_count = 0
-    API_LIMIT = 50
+def advanced_private_request(cli, url, params):
+    # 進階 header 強化仿真
+    headers = {
+        "X-IG-Capabilities": "3brTvw==",
+        "X-IG-Connection-Type": "WIFI",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive"
+    }
+    return cli.private_request(url, params=params, headers=headers)
 
-    folder = Path("order_information")
-    folder.mkdir(exist_ok=True)
-    file_path = None
-
-    images_dir = Path("images")
-    images_dir.mkdir(exist_ok=True)
+def fetch_comments_dynamic(cli, bid, limit, fname):
+    seen, last, cnt = set(), 0, 0
+    fail_count = 0
+    max_fail = 3
+    idle_count = 0
+    min_interval = 5
+    max_interval = 30
+    idle_step = 5
+    od, idr = Path('order_information'), Path('images')
+    od.mkdir(exist_ok=True)
+    idr.mkdir(exist_ok=True)
+    fp = None
 
     while True:
         try:
-            res = client.private_request(
-                f'live/{broadcast_id}/get_comment/',
-                params={'last_comment_ts': last_ts}
-            )
+            cur_interval = min(min_interval + idle_count * idle_step, max_interval)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在請求留言資料 ... (輪詢間隔 {cur_interval} 秒)")
+            res = advanced_private_request(cli, f'live/{bid}/get_comment/', params={'last_comment_ts': last})
             comments = res.get('comments', [])
-            if len(comments) >= API_LIMIT:
-                print(f"[警告] 本次取得 {len(comments)} 筆留言，已達單次API返回上限（{API_LIMIT}），建議減少 sleep 間隔或檢查是否有留言被遺漏！")
-            for c in comments:
-                cid = c.get('pk') or c.get('id')
-                if cid and cid not in seen:
-                    seen.add(cid)
-                    text = c.get('text', '')
-                    results = match_keyword(text)
-                    if results:
-                        ts_now = datetime.now()
-                        ts = ts_now.strftime('%Y-%m-%d %H:%M:%S')
-                        user_info = c.get('user', {})
-                        username = user_info.get('username', '<unknown>')
-                        for number, group_letter, group_number in results:
-                            print(f"[{ts}] 偵測到關鍵字 → user_id={c.get('user_id')}, username={username}, number={number}, group_letter={group_letter}, group_number={group_number}, text=\"{text}\"")
-                            # 儲存 CSV
-                            if file_path is None:
-                                prefix = ts_now.strftime("%Y%m%d_%H%M")
-                                safe_custom_name = custom_filename.replace(' ', '_')
-                                filename = f"{prefix}_{safe_custom_name}.csv"
-                                file_path = folder / filename
-                            save_order_info(file_path, number, group_letter, group_number, c.get('user_id'), username, text)
-                            # 產生小票圖片到 images
-                            img_filename = f"print_{username}_{group_letter}{group_number}_{number}_{int(time.time())}.png"
-                            img_path = str(images_dir / img_filename)
-                            generate_print_image(username, text, img_path)
-                            print_image_auto(img_path)
-                            # ====== 確認內容正確再啟用刪除 ======
-                            # try:
-                            #     os.remove(img_path)
-                            # except Exception as e:
-                            #     print(f"⚠️ 刪除圖片失敗：{e}")
-                            found_count += 1
-                            if limit > 0 and found_count >= limit:
-                                print(f"\n已達指定偵測數量 {limit}，自動停止。")
-                                return
-            if comments:
-                last_ts = max(c.get('created_at', last_ts) for c in comments)
+            print(f"本輪共取得 {len(comments)} 則留言。")
+            fail_count = 0
+        except LoginRequired:
+            fail_count += 1
+            print(f"[警告] Session 過期，正在第 {fail_count} 次嘗試重新登入...")
+            if fail_count >= max_fail:
+                print('連續登入失敗，腳本自動結束！請人工處理 IG 驗證。')
+                break
+            cli = get_client()
+            sleep_time = random.uniform(min_interval, min(10, max_interval))
+            print(f"Session 過期等待 {sleep_time:.1f} 秒再重試 ...")
+            time.sleep(sleep_time)
+            continue
         except Exception as e:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 讀取留言錯誤：{e}")
-        time.sleep(2)
+            print('取得評論失敗：', e)
+            sleep_time = random.uniform(min_interval, min(10, max_interval))
+            print(f"發生錯誤，暫停 {sleep_time:.1f} 秒")
+            time.sleep(sleep_time)
+            continue
 
-# 8. 主程式：CLI 參數
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['session', 'monitor'], default='monitor',
-                        help='session: 僅儲存/驗證 session | monitor: 啟動直播監聽')
-    parser.add_argument('--limit', type=int, help='最多偵測幾筆符合關鍵字的留言後停止（0為無限制）')
-    parser.add_argument('--filename', type=str, help='自訂檔案名稱（會加在自動產生的日期時間後）')
-    args = parser.parse_args()
+        got_new = False
+        for c in comments:
+            cid = c.get('pk') or c.get('id')
+            if not cid or cid in seen: continue
+            seen.add(cid)
+            un = c.get('user', {}).get('username', '<unk>')
+            if un in skip: continue
+            txt = c.get('text', '')
+            kws = match_keyword(txt)
+            if not kws: continue
+            got_new = True
+            if not fp:
+                ts = datetime.now().strftime('%Y%m%d_%H%M')
+                fp = od / f"{ts}_{fname}.csv"
+            for num, let, grp in kws:
+                row = [datetime.now().strftime('%Y-%m-%d %H:%M:%S'), num, let, grp, c.get('user_id'), un, txt]
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓到資料：{row}")
+                save_csv(fp, row)
+                print(f"資料已存入: {fp}")
+                imgf = idr / f"print_{un}_{let}{grp}_{num}_{int(time.time())}.png"
+                generate_print_image(un, txt, str(imgf))
+                print(f"已產生列印圖片: {imgf}")
+                print_image_auto(str(imgf))
+                cnt += 1
+                if limit and cnt >= limit:
+                    print("已達到設定的留言數上限，結束任務。")
+                    return
+        if comments:
+            last = max(c.get('created_at', last) for c in comments)
 
-    if args.limit is not None:
-        limit = args.limit
-    else:
-        try:
-            limit = int(input('請輸入最多偵測到幾筆符合關鍵字即停止（0 表示無限制）：').strip() or "0")
-        except Exception:
-            limit = 0
-
-    if args.filename:
-        custom_filename = args.filename
-    else:
-        custom_filename = input('請輸入自訂檔案名稱：').strip()
-        if not custom_filename:
-            print("錯誤：請必須填入檔案名稱")
-            sys.exit(1)
-
-    client = get_client()
-
-    if args.mode == 'session':
-        cl = client
-        cl.inject_sessionid_to_public()
-        cookie_dict = {}
-        for name in dir(cl):
-            try:
-                attr = getattr(cl, name)
-            except Exception:
-                continue
-            if hasattr(attr, 'cookies'):
-                jar = attr.cookies
-                if hasattr(jar, 'get_dict'):
-                    cookies = jar.get_dict()
-                else:
-                    try:
-                        cookies = {c.name: c.value for c in jar}
-                    except Exception:
-                        continue
-                if cookies:
-                    print(f"🍪 從屬性 {name}.cookies 擷取到 cookies：")
-                    cookie_dict = cookies
-                    break
-        if cookie_dict:
-            print(json.dumps(cookie_dict, indent=2, ensure_ascii=False))
-            print("\n📋 關鍵欄位：")
-            print(f"  sessionid = {cookie_dict.get('sessionid', '<missing>')}")
-            print(f"  csrftoken = {cookie_dict.get('csrftoken', '<missing>')}")
-            print(f"  mid       = {cookie_dict.get('mid', '<missing>')}")
+        if got_new:
+            idle_count = 0
         else:
-            print("⚠️ 無法找到有效 cookies！")
-        ua = cl.settings.get('user_agent', '<missing UA>')
-        print(f"\n🔖 user_agent = {ua}")
-        return
-
-    # monitor
-    if not BROADCAST_ID:
-        print("錯誤：.env 檔案未設定 BROADCAST_ID，請手動填寫。")
-        sys.exit(1)
-    broadcast_id = BROADCAST_ID
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 使用 .env 設定的 broadcast_id：{broadcast_id}")
-    fetch_live_comments(client, broadcast_id, limit, custom_filename)
+            idle_count += 1
+        interval = min(min_interval + idle_count * idle_step, max_interval)
+        interval = random.uniform(interval, interval+2)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 輪詢休息 {interval:.1f} 秒 ...\n")
+        time.sleep(interval)
 
 if __name__ == '__main__':
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument('--mode', choices=['session', 'monitor'], default='monitor')
+    p.add_argument('--limit', type=int)
+    p.add_argument('--filename', type=str)
+    a = p.parse_args()
+    lim = a.limit if a.limit is not None else int(input('最多偵測幾筆 (0 無限): ').strip() or 0)
+    fn = a.filename if a.filename else input('輸入檔名: ').strip()
+    if not fn: sys.exit('需提供檔名')
+    cli = get_client()
+    if a.mode == 'session':
+        cli.inject_sessionid_to_public()
+        print(cli.settings.get('user_agent'))
+    else:
+        if not BID: sys.exit('需設定 BROADCAST_ID')
+        fetch_comments_dynamic(cli, BID, lim, fn)
