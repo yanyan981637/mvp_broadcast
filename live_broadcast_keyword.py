@@ -14,11 +14,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 from instagrapi import Client
 from instagrapi.exceptions import TwoFactorRequired, LoginRequired
-from PIL import Image, ImageDraw, ImageFont, ImageWin
+from PIL import Image, ImageDraw, ImageFont
 
-# =======================
 # 裝置資料池
-# =======================
 DEVICE_POOL = [
     {
         "app_version": "290.0.0.28.109",
@@ -74,14 +72,13 @@ DEVICE_POOL = [
     }
 ]
 
-# =======================
-# Windows printing modules
-# =======================
+# Windows 印表機相容
 if platform.system().lower() == "windows":
     try:
         import win32print
         import win32ui
         import win32con
+        from PIL import ImageWin
     except ImportError:
         print("請先安裝 pywin32：pip install pywin32")
         sys.exit(1)
@@ -99,46 +96,52 @@ def get_font(size):
 
 def generate_print_image(username, text, img_path):
     dpi = 300
-    w_cm, h_cm = 5, 3
-    w_px, h_px = int(w_cm * dpi / 2.54), int(h_cm * dpi / 2.54)
+    w_mm, h_mm = 50, 30
+    w_px, h_px = int(w_mm / 25.4 * dpi), int(h_mm / 25.4 * dpi)
     img = Image.new('RGB', (w_px, h_px), 'white')
     draw = ImageDraw.Draw(img)
 
-    def text_size(txt, font):
-        bbox = draw.textbbox((0, 0), txt, font=font)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+    # 動態自適應字體
+    def fit_font(draw, txt, max_width, max_height, max_font_size):
+        for font_size in range(max_font_size, 5, -1):
+            font = get_font(font_size)
+            bbox = draw.textbbox((0, 0), txt, font=font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            if w <= max_width and h <= max_height:
+                return font, w, h
+        return get_font(6), 0, 0  # fallback
 
-    def fit_font(txt, max_w, max_s):
-        s = max_s
-        font = get_font(s)
-        w, _ = text_size(txt, font)
-        while w > max_w and s > 10:
-            s -= 1
-            font = get_font(s)
-            w, _ = text_size(txt, font)
-        return font
+    # 留2mm邊界
+    padding = int(2 / 25.4 * dpi)
+    usable_w = w_px - 2 * padding
+    usable_h = h_px - 2 * padding
 
-    f1 = fit_font(username, w_px * 0.9, 70)
-    f2 = fit_font(text, w_px * 0.9, 55)
-    w1, _ = text_size(username, f1)
-    w2, _ = text_size(text, f2)
-    x1, x2 = (w_px - w1) // 2, (w_px - w2) // 2
-    y1, y2 = int(h_px * 0.18), int(h_px * 0.56)
+    # 分兩行自動適應：username一行＋留言一行
+    font1, w1, h1 = fit_font(draw, username, usable_w, usable_h//2, max_font_size=80)
+    font2, w2, h2 = fit_font(draw, text, usable_w, usable_h//2, max_font_size=48)
 
-    draw.text((x1, y1), username, 'black', font=f1)
-    draw.text((x2, y2), text, 'black', font=f2)
+    # 上行y座標
+    y1 = padding + (usable_h//2 - h1)//2
+    x1 = (w_px - w1)//2
+    # 下行y座標
+    y2 = padding + usable_h//2 + (usable_h//2 - h2)//2
+    x2 = (w_px - w2)//2
+
+    draw.text((x1, y1), username, fill='black', font=font1)
+    draw.text((x2, y2), text, fill='black', font=font2)
     img.save(img_path, dpi=(dpi, dpi))
     return img_path
 
 def print_image_auto(img_path):
-    landscape = platform.system().lower() == 'windows'
-    img = Image.open(img_path).rotate(90, expand=True)
-    if not landscape:
-        tmp = img_path.replace('.png', '_rotated.png')
+    img = Image.open(img_path)
+    if platform.system().lower() != 'windows':
+        tmp = img_path.replace('.png', '_print.png')
         img.save(tmp)
         os.system(f'lp "{tmp}"')
         print(f"已發送至非Windows印表機：{tmp}")
         return
+    # Windows 列印
     printer = win32print.GetDefaultPrinter()
     dc = win32ui.CreateDC()
     dc.CreatePrinterDC(printer)
@@ -189,7 +192,6 @@ def get_client():
         "cpu": device["cpu"],
         "version_code": device["version_code"]
     }
-
     cl.challenge_code_handler = challenge_code_handler
     if Path(SESSION_FILE).exists():
         cl.load_settings(SESSION_FILE)
@@ -214,7 +216,6 @@ def save_csv(fp, row):
         w.writerow(row)
 
 def advanced_private_request(cli, url, params):
-    # 進階 header 強化仿真
     headers = {
         "X-IG-Capabilities": "3brTvw==",
         "X-IG-Connection-Type": "WIFI",
